@@ -10,14 +10,6 @@
 name: PkgCI Test RISCV64 IME
 
 on:
-  workflow_call:
-    inputs:
-      artifact_run_id:
-        type: string
-        default: ""
-      write-caches:
-        required: true
-        type: string
   workflow_dispatch:
     inputs:
       artifact_run_id:
