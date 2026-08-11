@@ -67,20 +67,31 @@ jobs:
         env:
           IREE_ARTIFACT_URL: "https://sharkpublic.blob.core.windows.net/sharkpublic/GCP-Migration-Files"
           RISCV_CLANG_TOOLCHAIN_FILE_NAME: "toolchain_iree_manylinux_2_28_20231012.tar.gz"
-          QEMU_FILE_NAME: "qemu-riscv_8.1.2_manylinux_2.28_20231026.tar.gz"
         run: |
           mkdir -p ${{ env.BOOTSTRAP_WORK_DIR }}
           mkdir -p ${{ env.RISCV_TOOLCHAIN_ROOT }}
           mkdir -p ${{ env.QEMU_PATH_PREFIX }}
           wget --progress=bar:force:noscroll --directory-prefix="${BOOTSTRAP_WORK_DIR}" "${IREE_ARTIFACT_URL}/${RISCV_CLANG_TOOLCHAIN_FILE_NAME}"
           tar -C "${{ env.RISCV_TOOLCHAIN_ROOT }}" -xf "${BOOTSTRAP_WORK_DIR}/${RISCV_CLANG_TOOLCHAIN_FILE_NAME}" --no-same-owner --strip-components=1
-          wget --progress=bar:force:noscroll --directory-prefix="${BOOTSTRAP_WORK_DIR}" "${IREE_ARTIFACT_URL}/${QEMU_FILE_NAME}"
-          tar -C "${{ env.QEMU_PATH_PREFIX }}" -xf "${BOOTSTRAP_WORK_DIR}/${QEMU_FILE_NAME}" --no-same-owner --strip-components=1
+      - name: Build Xuantie vendor QEMU
+        run: |
+          sudo apt update && sudo apt install -y build-essential ninja-build pkg-config \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          git clone --depth 1 --branch xuantie-qemu-9.0 \
+            https://github.com/XUANTIE-RV/qemu.git "${{ env.BOOTSTRAP_WORK_DIR }}/qemu"
+          cd "${{ env.BOOTSTRAP_WORK_DIR }}/qemu"
+          ./configure \
+            --target-list=riscv64-linux-user \
+            --prefix="${{ env.QEMU_PATH_PREFIX }}" \
+            --disable-werror \
+            --disable-docs
+          make -j"$(nproc)"
+          make install
       - name: Build riscv64
         env:
           IREE_HOST_BIN_DIR: ${{ env.VENV_DIR }}/bin
         run: ./build_tools/cmake/build_riscv.sh
       - name: Test riscv64
         env:
-          QEMU_BIN: ${{ env.QEMU_PATH_PREFIX }}/qemu-riscv64
+          QEMU_BIN: ${{ env.QEMU_PATH_PREFIX }}/bin/qemu-riscv64
         run: ./build_tools/cmake/test_riscv.sh
