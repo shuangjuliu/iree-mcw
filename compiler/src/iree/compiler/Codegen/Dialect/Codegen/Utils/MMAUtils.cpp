@@ -52,7 +52,7 @@ distributeMmaFragmentToIntrinsics(OpBuilder &builder, Location loc, Value value,
         return dim.kind() == TileSwizzle::Dim::Kind::CrossIntrinsic;
       });
   bool hasScalable =
-      llvm::any_of(internalType.getScalableDimFlags(),
+      llvm::any_of(internalType.getScalableDims(),
                    [](bool b) { return b; });
   int rank = internalShape.size();
   SmallVector<int64_t> indices(rank, 0);
@@ -69,7 +69,7 @@ distributeMmaFragmentToIntrinsics(OpBuilder &builder, Location loc, Value value,
       // scalable result.
       auto valueType = cast<VectorType>(value.getType());
       int numScalable = 0;
-      for (bool scalable : valueType.getScalableDimFlags()) {
+      for (bool scalable : valueType.getScalableDims()) {
         numScalable += scalable;
       }
       int numLeading = valueType.getRank() - numScalable;
@@ -188,7 +188,7 @@ LogicalResult buildDataTiledMMAUnderlyingOperations(
   Type accElemType = cast<VectorType>(origAccType).getElementType();
   auto fullAccType = fullDistributedType(accSwizzle, accElemType);
   bool accHasScalable =
-      llvm::any_of(fullAccType.getScalableDimFlags(),
+      llvm::any_of(fullAccType.getScalableDims(),
                    [](bool b) { return b; });
 
   auto reassembleOp = IREE::Util::HoistableConversionOp::create(

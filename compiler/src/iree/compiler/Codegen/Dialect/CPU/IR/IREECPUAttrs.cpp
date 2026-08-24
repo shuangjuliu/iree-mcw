@@ -374,6 +374,14 @@ getRowMajorTilesMNKShape(MMAIntrinsic intrinsic) {
   // ACC tile has a non-row-major layout, hand-rolled in `getIntrinsicSwizzle`.
   case MMAIntrinsic::MMA_X86_AVX512VNNI_16x16x2_I32_I8_CASTI16:
     return Tuple{16, 16, 2};
+  // Arm NEON `fmla` is fixed-width (128-bit), so the 4-lane dim is static and
+  // the regular row-major swizzle path in `getIntrinsicSwizzle` handles it.
+  // (SVE deliberately does *not* go through this function: its tile carries a
+  // symbolic scalable dim and is hand-rolled in `getIntrinsicSwizzle`.)
+  case MMAIntrinsic::MMA_ARM_NEON_FMLA_1x4x1_F32_F32:
+    return Tuple{1, 4, 1};
+  case MMAIntrinsic::MMA_ARM_NEON_FMLA_4x1x1_F32_F32:
+    return Tuple{4, 1, 1};
   default:
     if (isGenericScalar(intrinsic)) {
       return Tuple{1, 1, 1};
@@ -393,6 +401,7 @@ constexpr uint32_t kMMAIntrinsicISAGeneric = 0xF000;
 constexpr uint32_t kMMAIntrinsicGenericBudgetMask = 0x00FF;
 constexpr uint32_t kMMAIntrinsicISAX86Avx2 = 0x1200;
 constexpr uint32_t kMMAIntrinsicISAX86Avx512 = 0x1300;
+constexpr uint32_t kMMAIntrinsicISAArmNeon = 0x2100;
 constexpr uint32_t kMMAIntrinsicISAArmSve = 0x2200;
 
 bool isGenericScalar(MMAIntrinsic intr) {
@@ -419,6 +428,8 @@ int64_t getRegisterSpaceBytes(MMAIntrinsic intrinsic) {
     return 16 * 32;
   case kMMAIntrinsicISAX86Avx512: // 32 ZMM × 64 B.
     return 32 * 64;
+  case kMMAIntrinsicISAArmNeon: // 32 Q × 16 B.
+    return 32 * 16;
   case kMMAIntrinsicISAArmSve: // 32 Z × (VL treated as 128 bits).
     return 32 * 16;
   default:
@@ -615,6 +626,9 @@ std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *ctx,
     return {i8, IntegerType::get(ctx, 8, IntegerType::Unsigned), i32};
   case MMAIntrinsic::MMA_ARM_SVE_FMLA_1x4VLx1_F32_F32:
   case MMAIntrinsic::MMA_ARM_SVE_FMLA_4VLx1x1_F32_F32:
+    return {f32, f32, f32};
+  case MMAIntrinsic::MMA_ARM_NEON_FMLA_1x4x1_F32_F32:
+  case MMAIntrinsic::MMA_ARM_NEON_FMLA_4x1x1_F32_F32:
     return {f32, f32, f32};
   default:
     return {Type(), Type(), Type()};
