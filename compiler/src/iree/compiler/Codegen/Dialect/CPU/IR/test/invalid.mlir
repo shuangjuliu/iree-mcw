@@ -122,3 +122,69 @@ func.func @cpu_inner_tiled_sve_rhs_n_must_be_dynamic(
   } : tensor<1x1x1x1xf32>, tensor<1x1x4x1xf32> into tensor<1x1x1x?xf32>
   return %0 : tensor<1x1x1x?xf32>
 }
+
+// -----
+
+// Swapped SVE orientation: the scalable dim is on LHS/acc (M); a fixed M
+// extent (4) instead of a dynamic one does not match.
+
+#contraction_accesses = [
+  affine_map<(i, j, k) -> (i, k)>,
+  affine_map<(i, j, k) -> (k, j)>,
+  affine_map<(i, j, k) -> (i, j)>
+]
+func.func @cpu_inner_tiled_sve_swapped_lhs_m_must_be_dynamic(
+    %lhs: tensor<1x1x4x1xf32>, %rhs: tensor<1x1x1x1xf32>, %acc: tensor<1x1x?x1xf32>) -> tensor<1x1x?x1xf32> {
+  // expected-error @+1 {{'iree_codegen.inner_tiled' op operand #0 inner tile 'tensor<4x1xf32>' is incompatible with expected MMA tile type 'vector<[4]x1xf32>'}}
+  %0 = iree_codegen.inner_tiled ins(%lhs, %rhs) outs(%acc) {
+    indexing_maps = #contraction_accesses,
+    iterator_types = [#linalg.iterator_type<parallel>, #linalg.iterator_type<parallel>, #linalg.iterator_type<reduction>],
+    kind = #iree_cpu.data_tiled_mma_layout<intrinsic = MMA_ARM_SVE_FMLA_4VLx1x1_F32_F32>,
+    semantics = #iree_cpu.mma_semantics<>
+  } : tensor<1x1x4x1xf32>, tensor<1x1x1x1xf32> into tensor<1x1x?x1xf32>
+  return %0 : tensor<1x1x?x1xf32>
+}
+
+// -----
+
+// Natural SVE orientation expects the scalable dim on RHS (N); giving the
+// swapped operand layout (scalable LHS) to the natural intrinsic is rejected.
+
+#contraction_accesses = [
+  affine_map<(i, j, k) -> (i, k)>,
+  affine_map<(i, j, k) -> (k, j)>,
+  affine_map<(i, j, k) -> (i, j)>
+]
+func.func @cpu_inner_tiled_sve_natural_with_swapped_layout(
+    %lhs: tensor<1x1x?x1xf32>, %rhs: tensor<1x1x1x1xf32>, %acc: tensor<1x1x?x1xf32>) -> tensor<1x1x?x1xf32> {
+  // expected-error @+1 {{'iree_codegen.inner_tiled' op operand #0 inner tile 'tensor<?x1xf32>' is incompatible with expected MMA tile type 'vector<1x1xf32>'}}
+  %0 = iree_codegen.inner_tiled ins(%lhs, %rhs) outs(%acc) {
+    indexing_maps = #contraction_accesses,
+    iterator_types = [#linalg.iterator_type<parallel>, #linalg.iterator_type<parallel>, #linalg.iterator_type<reduction>],
+    kind = #iree_cpu.data_tiled_mma_layout<intrinsic = MMA_ARM_SVE_FMLA_1x4VLx1_F32_F32>,
+    semantics = #iree_cpu.mma_semantics<>
+  } : tensor<1x1x?x1xf32>, tensor<1x1x1x1xf32> into tensor<1x1x?x1xf32>
+  return %0 : tensor<1x1x?x1xf32>
+}
+
+// -----
+
+// The acc tile for SVE has a single scalable inner dim; two dynamic inner dims
+// do not match `vector<[4]x1xf32>`.
+
+#contraction_accesses = [
+  affine_map<(i, j, k) -> (i, k)>,
+  affine_map<(i, j, k) -> (k, j)>,
+  affine_map<(i, j, k) -> (i, j)>
+]
+func.func @cpu_inner_tiled_sve_wrong_acc_shape(
+    %lhs: tensor<1x1x1x1xf32>, %rhs: tensor<1x1x1x?xf32>, %acc: tensor<1x1x?x?xf32>) -> tensor<1x1x?x?xf32> {
+  // expected-error @+1 {{'iree_codegen.inner_tiled' op operand #2 inner tile 'tensor<?x?xf32>' is incompatible with expected MMA tile type 'vector<[4]x1xf32>'}}
+  %0 = iree_codegen.inner_tiled ins(%lhs, %rhs) outs(%acc) {
+    indexing_maps = #contraction_accesses,
+    iterator_types = [#linalg.iterator_type<parallel>, #linalg.iterator_type<parallel>, #linalg.iterator_type<reduction>],
+    kind = #iree_cpu.data_tiled_mma_layout<intrinsic = MMA_ARM_SVE_FMLA_1x4VLx1_F32_F32>,
+    semantics = #iree_cpu.mma_semantics<>
+  } : tensor<1x1x1x1xf32>, tensor<1x1x1x?xf32> into tensor<1x1x?x?xf32>
+  return %0 : tensor<1x1x?x?xf32>
+}
