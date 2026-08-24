@@ -26,7 +26,11 @@ bool incrementIndices(MutableArrayRef<int64_t> indices,
 }
 
 // Flattens vector `value` to 1-D if its rank is greater than 1; otherwise
-// returns it unchanged.
+// returns it unchanged. Fixed-width only: it builds the flat type from the
+// integer element count, which is undefined for scalable vectors. Callers with
+// scalable vectors must use the scalable branch in
+// `distributeMmaFragmentToIntrinsics` (which shape_casts away unit dims while
+// preserving scalable flags) instead.
 static Value flattenVector(OpBuilder &builder, Location loc, Value value) {
   auto vectorType = cast<VectorType>(value.getType());
   if (vectorType.getRank() <= 1) {
@@ -60,25 +64,40 @@ distributeMmaFragmentToIntrinsics(OpBuilder &builder, Location loc, Value value,
   SmallVector<Value> distributedValues;
   do {
     if (hasScalable) {
-      // Scalable-safe extraction: the distributed value's cross-intrinsic dims
-      // are all leading and the scalable internal dims trailing (MLIR requires
-      // scalable dims last), so a single `vector.extract` at the coordinates of
-      // the leading fixed dims peels them and yields the per-intrinsic fragment
-      // as the trailing scalable subvector. This keeps the fragment scalable —
-      // the fixed-width `ExtractStridedSliceOp` path below cannot produce a
-      // scalable result.
-      auto valueType = cast<VectorType>(value.getType());
-      int numScalable = 0;
-      for (bool scalable : valueType.getScalableDims()) {
-        numScalable += scalable;
+      // Scalable-safe extraction. The distributed value's cross-intrinsic dims
+      // are all leading (fixed), and the internal dims — including the scalable
+      // one — follow (see the comment above `fullDistributedType`). Peel the
+      // leading cross-intrinsic dims with a single `vector.extract` to obtain
+      // the internal tile (e.g. `vector<[4]x1xf32>` for SVE), then `shape_cast`
+      // away the non-scalable unit dims to yield the per-intrinsic scalable
+      // fragment (`vector<[4]xf32>`). The fixed-width `ExtractStridedSliceOp`
+      // path below cannot produce a scalable result, so this branch exists
+      // specifically for SVE/RVV.
+      int numCrossIntrinsic = 0;
+      for (int64_t size : crossIntrinsicShape) {
+        numCrossIntrinsic += (size > 1);
       }
-      int numLeading = valueType.getRank() - numScalable;
       SmallVector<int64_t> pos;
-      for (int d = 0; d < numLeading; ++d) {
-        pos.push_back(crossIntrinsicShape[d] > 1 ? indices[d] : 0);
+      for (int d = 0; d < numCrossIntrinsic; ++d) {
+        pos.push_back(indices[d]);
       }
-      distributedValues.push_back(
-          vector::ExtractOp::create(builder, loc, value, pos));
+      Value piece = vector::ExtractOp::create(builder, loc, value, pos);
+      auto pieceType = cast<VectorType>(piece.getType());
+      SmallVector<int64_t> fragShape;
+      SmallVector<bool> fragScalable;
+      ArrayRef<int64_t> pieceShape = pieceType.getShape();
+      ArrayRef<bool> pieceScalable = pieceType.getScalableDims();
+      for (unsigned i = 0; i < pieceShape.size(); ++i) {
+        if (pieceScalable[i] || pieceShape[i] != 1) {
+          fragShape.push_back(pieceShape[i]);
+          fragScalable.push_back(pieceScalable[i]);
+        }
+      }
+      auto fragType = VectorType::get(fragShape, elemType, fragScalable);
+      if (pieceType != fragType) {
+        piece = vector::ShapeCastOp::create(builder, loc, fragType, piece);
+      }
+      distributedValues.push_back(piece);
     } else {
       Value extract = vector::ExtractStridedSliceOp::create(
           builder, loc, value, indices, internalShape, strides);
@@ -201,20 +220,31 @@ LogicalResult buildDataTiledMMAUnderlyingOperations(
         Value acc =
             arith::ConstantOp::create(b, loc, b.getZeroAttr(fullAccType));
         if (accHasScalable) {
-          // Scalable-safe reassembly: each per-intrinsic fragment is the
-          // trailing scalable subvector (e.g. `vector<[4]xf32>` for SVE), and
-          // the leading dims are the cross-intrinsic ones plus size-1 internal
-          // dims. `vector.insert` places the fragment at the cross-intrinsic
-          // coordinates, keeping the scalable flags on the result.
-          int64_t numInsertIndices = dstRank - cast<VectorType>(args[0].getType()).getRank();
+          // Scalable-safe reassembly. Each per-intrinsic fragment is the
+          // scalable subvector (e.g. `vector<[4]xf32>` for SVE); shape_cast it
+          // back to the internal tile type (`vector<[4]x1xf32>`) and
+          // `vector.insert` it at the leading cross-intrinsic coordinates. The
+          // `numCrossIntrinsic` leading fixed dims are the insertion
+          // coordinates; the scalable dims stay in place at the tail.
+          int64_t numCrossIntrinsic = 0;
+          for (int64_t size : accCrossIntrinsicShape) {
+            numCrossIntrinsic += (size > 1);
+          }
+          auto internalAccType = VectorType::get(
+              fullAccType.getShape().drop_front(numCrossIntrinsic), accElemType,
+              fullAccType.getScalableDims().drop_front(numCrossIntrinsic));
           for (Value intrAcc : args) {
-            acc = vector::InsertOp::create(b, loc, intrAcc, acc,
-                                           ArrayRef<int64_t>(indices).take_front(
-                                               numInsertIndices));
-            incrementIndices(MutableArrayRef<int64_t>(indices).take_front(
-                                 numInsertIndices),
-                             ArrayRef<int64_t>(accCrossIntrinsicShape)
-                                 .take_front(numInsertIndices));
+            if (intrAcc.getType() != internalAccType) {
+              intrAcc = vector::ShapeCastOp::create(b, loc, internalAccType,
+                                                    intrAcc);
+            }
+            acc = vector::InsertOp::create(
+                b, loc, intrAcc, acc,
+                ArrayRef<int64_t>(indices).take_front(numCrossIntrinsic));
+            incrementIndices(
+                MutableArrayRef<int64_t>(indices).take_front(numCrossIntrinsic),
+                ArrayRef<int64_t>(accCrossIntrinsicShape)
+                    .take_front(numCrossIntrinsic));
           }
         } else {
           for (Value intrAcc : args) {
