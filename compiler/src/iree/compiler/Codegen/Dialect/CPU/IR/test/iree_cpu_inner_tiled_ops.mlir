@@ -316,10 +316,8 @@ func.func @cpu_inner_tiled_tensor_arm_sve_fmla_f32_swapped(
 ]
 // AArch64 SVE `fmla` natural orientation, vector form: the RHS and acc tiles
 // are `vector<[4]x1xf32>` (scalable N) and the LHS is `vector<1x1xf32>`.
-// FIXME: this currently fails verification because `verifyOperandTypes` builds
-// the operand tile as a `RankedTensorType` from the vector's static shape,
-// losing the scalable flag (`vector<[4]x1xf32>`.getShape() == [4, 1]). Once the
-// verifier keeps scalable flags for vector operands, this should be accepted.
+// The verifier compares vector operands vector-to-vector, preserving the
+// scalable `[4]` flag.
 func.func @cpu_inner_tiled_vector_arm_sve_fmla_f32(
     %lhs: vector<1x1xf32>, %rhs: vector<[4]x1xf32>, %acc: vector<[4]x1xf32>)
     -> vector<[4]x1xf32> {
@@ -345,7 +343,6 @@ func.func @cpu_inner_tiled_vector_arm_sve_fmla_f32(
 ]
 // AArch64 SVE `fmla` swapped orientation, vector form: the LHS and acc tiles
 // are `vector<[4]x1xf32>` (scalable M) and the RHS is `vector<1x1xf32>`.
-// FIXME: same scalable-flag loss as the natural vector form above.
 func.func @cpu_inner_tiled_vector_arm_sve_fmla_f32_swapped(
     %lhs: vector<[4]x1xf32>, %rhs: vector<1x1xf32>, %acc: vector<[4]x1xf32>)
     -> vector<[4]x1xf32> {
