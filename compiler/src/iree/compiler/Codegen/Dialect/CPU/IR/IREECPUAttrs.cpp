@@ -794,6 +794,47 @@ static Value lowerX86Avx512Vnni16x16x2I8(OpBuilder &b, Location loc, Value lhs,
   return result;
 }
 
+// Lowers one `llvm.aarch64.sve.fmla.nxv4f32` intrinsic: an in‑place
+// floating‑point fused multiply‑accumulate operation for SVE scalable vector.
+//
+// Operands:
+//   `lhs`:          vector<[4]xf32>, multiplier‑left vector tile (matrix A)
+//   `rhs`:          vector<[4]xf32>, multiplier‑right vector tile (matrix B)
+//   `acc`:          vector<[4]xf32>, accumulator register, holds previous sum
+//   `predicate`:    vector<[4]xi1>, SVE merge‑mask predicate (/m behaviour).
+//                   Lanes with predicate=false keep original accumulator value.
+//
+// Computation: acc = lhs * rhs + acc
+// Emits SVE assembly: fmla Zd.S, Pg/M, Zn.S, Zm.S
+static Value lowerAArch64SveFmlaNxv4f32(OpBuilder &b, Location loc, Value lhs,
+                                          Value rhs, Value acc, Value predicate) {
+  Type f32 = b.getF32Type();
+  Type i1  = b.getI1Type();
+
+  // SVE scalable‑vector type: <vscale x 4 x f32>
+  auto vecF32Ty = LLVM::ScalableVectorType::get(f32, 4);
+  // Predicate mask scalable‑vector type: <vscale x 4 x i1>
+  auto vecPredTy = LLVM::ScalableVectorType::get(i1, 4);
+
+  // Call the SVE‑target‑specific fmla intrinsic directly.
+  // Signature:
+  // <vscale x 4 x float> @llvm.aarch64.sve.fmla.nxv4f32(
+  //    <vscale x 4 x float> %acc,
+  //    <vscale x 4 x float> %lhs,
+  //    <vscale x 4 x float> %rhs,
+  //    <vscale x 4 x i1>    %predicate
+  // )
+  Value fmlaResult =
+      LLVM::CallIntrinsicOp::create(
+          b, loc, vecF32Ty,
+          b.getStringAttr("llvm.aarch64.sve.fmla.nxv4f32"),
+          ValueRange{acc, lhs, rhs, predicate})
+          .getResult(0);
+
+  return fmlaResult;
+}
+
+
 // Lowers a MMAIntrinsic to a llvm.call_intrinsic op, plus any necessary
 // additional ops (potentially broadcasting or widening LHS/RHS or creating an
 // add op if the intrinsic isn't already adding the accumulator).
@@ -831,12 +872,17 @@ static Value createCpuMmaIntrinsicCall(OpBuilder &builder, Location loc,
         vector::BroadcastOp::create(builder, loc, vectorType, scalarElem);
     Value a = swapped ? vectorOperand : broadcastScalar;
     Value b = swapped ? broadcastScalar : vectorOperand;
-    StringRef intrinsicName =
-        vectorType.isScalable() ? "llvm.fma.nxv4f32" : "llvm.fma.v4f32";
-    return LLVM::CallIntrinsicOp::create(builder, loc, acc.getType(),
-                                         builder.getStringAttr(intrinsicName),
-                                         ValueRange{a, b, acc})
-        .getResult(0);
+
+    if vectorType.isScalable() {
+      // "llvm.fma.nxv4f32"
+      return lowerAArch64SveFmlaNxv4f32(b, loc, lhs, rhs, acc, predicateMask);
+    else {
+      StringRef intrinsicName = "llvm.fma.v4f32";
+      return LLVM::CallIntrinsicOp::create(builder, loc, acc.getType(),
+                                           builder.getStringAttr(intrinsicName),
+                                           ValueRange{a, b, acc})
+            .getResult(0);
+    }
   }
   // Sign-/float-extend a vector to a wider element type. Used by the
   // *_CASTF32 (f16 → f32) and *_CASTI16 (i8 → i16) variants where the
