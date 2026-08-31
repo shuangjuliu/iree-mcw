@@ -216,7 +216,7 @@ func.func @lower_arm_neon_fmla_4x1x1_f32(
 // -----
 
 // SVE `fmla` natural orientation (1×4VL×1): the scalar LHS is broadcast to a
-// *scalable* vector and the intrinsic is `llvm.fma.nxv4f32`. The scalable `[4]`
+// *scalable* vector and the intrinsic is `llvm.aarch64.sve.fmla`. The scalable `[4]`
 // type survives all the way through the lowering.
 
 #contraction_accesses = [
@@ -242,7 +242,7 @@ func.func @lower_arm_sve_fmla_1x4vlx1_f32(
 //   CHECK-NOT:   iree_codegen.inner_tiled
 //   CHECK-NOT:   util.hoistable_conversion
 //       CHECK:   vector.broadcast {{.*}} : f32 to vector<[4]xf32>
-//       CHECK:   llvm.call_intrinsic "llvm.fma.nxv4f32"({{.*}}) : (vector<[4]xf32>, vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
+//       CHECK:   llvm.call_intrinsic "llvm.aarch64.sve.fmla"({{.*}}) : (vector<[4]xi1>, vector<[4]xf32>, vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
 
 // -----
 
@@ -271,12 +271,12 @@ func.func @lower_arm_sve_fmla_4vlx1x1_f32(
 // CHECK-LABEL: func @lower_arm_sve_fmla_4vlx1x1_f32
 //   CHECK-NOT:   iree_codegen.inner_tiled
 //   CHECK-NOT:   util.hoistable_conversion
-//       CHECK:   llvm.call_intrinsic "llvm.fma.nxv4f32"({{.*}}) : (vector<[4]xf32>, vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
+//       CHECK:   llvm.call_intrinsic "llvm.aarch64.sve.fmla"({{.*}}) : (vector<[4]xi1>, vector<[4]xf32>, vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
 
 // -----
 
 // SVE `fmla` with intrinsics_n = 2: the cross-intrinsic N dim is unrolled into
-// two per-intrinsic `llvm.fma.nxv4f32` calls, and the scalable extraction /
+// two per-intrinsic `llvm.aarch64.sve.fmla` calls, and the scalable extraction /
 // reassembly keeps the `[4]` scalable flag throughout.
 
 #contraction_accesses = [
@@ -298,5 +298,5 @@ func.func @lower_arm_sve_fmla_intrinsics_n2(
 
 // CHECK-LABEL: func @lower_arm_sve_fmla_intrinsics_n2
 //   CHECK-NOT:   iree_codegen.inner_tiled
-//       CHECK:   llvm.call_intrinsic "llvm.fma.nxv4f32"({{.*}}) : (vector<[4]xf32>, vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
-//       CHECK:   llvm.call_intrinsic "llvm.fma.nxv4f32"({{.*}}) : (vector<[4]xf32>, vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
+//       CHECK:   llvm.call_intrinsic "llvm.aarch64.sve.fmla"({{.*}}) : (vector<[4]xi1>, vector<[4]xf32>, vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
+//       CHECK:   llvm.call_intrinsic "llvm.aarch64.sve.fmla"({{.*}}) : (vector<[4]xi1>, vector<[4]xf32>, vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
