@@ -794,41 +794,36 @@ static Value lowerX86Avx512Vnni16x16x2I8(OpBuilder &b, Location loc, Value lhs,
   return result;
 }
 
-// Lowers one `llvm.aarch64.sve.fmla.nxv4f32` intrinsic: an in‑place
-// floating‑point fused multiply‑accumulate operation for SVE scalable vector.
+// Lowers one `llvm.aarch64.sve.fmla` intrinsic: an in‑place floating‑point
+// fused multiply‑accumulate operation for SVE scalable vector.
 //
 // Operands:
-//   `lhs`:          vector<[4]xf32>, multiplier‑left vector tile (matrix A)
-//   `rhs`:          vector<[4]xf32>, multiplier‑right vector tile (matrix B)
+//   `a`:            vector<[4]xf32>, multiplier‑left vector tile (matrix A)
+//   `b`:            vector<[4]xf32>, multiplier‑right vector tile (matrix B)
 //   `acc`:          vector<[4]xf32>, accumulator register, holds previous sum
-//   `predicate`:    vector<[4]xi1>, SVE merge‑mask predicate (/m behaviour).
-//                   Lanes with predicate=false keep original accumulator value.
 //
-// Computation: acc = lhs * rhs + acc
+// Computation: acc = a * b + acc
 // Emits SVE assembly: fmla Zd.S, Pg/M, Zn.S, Zm.S
-static Value lowerAArch64SveFmlaNxv4f32(OpBuilder &b, Location loc, Value lhs,
-                                          Value rhs, Value acc, Value predicate) {
-  Type f32 = b.getF32Type();
-  Type i1  = b.getI1Type();
+static Value lowerAArch64SveFmlaNxv4f32(OpBuilder &builder, Location loc,
+                                          Value a, Value b, Value acc) {
+  auto accType = cast<VectorType>(acc.getType());
 
-  // SVE scalable‑vector type: <vscale x 4 x f32>
-  auto vecF32Ty = LLVM::ScalableVectorType::get(f32, 4);
-  // Predicate mask scalable‑vector type: <vscale x 4 x i1>
-  auto vecPredTy = LLVM::ScalableVectorType::get(i1, 4);
+  // Predicate mask scalable‑vector type: <vscale x 4 x i1>, same shape and
+  // scalable dims as the f32 vectors. An undef predicate gives identity merge
+  // (/m with all lanes active), matching the inner_tiled accumulation pattern
+  // where every lane participates.
+  auto predType = VectorType::get(accType.getShape(), builder.getI1Type(),
+                                  accType.getScalableDims());
+  Value undefPred = LLVM::UndefOp::create(builder, loc, predType).getResult();
 
   // Call the SVE‑target‑specific fmla intrinsic directly.
-  // Signature:
-  // <vscale x 4 x float> @llvm.aarch64.sve.fmla.nxv4f32(
-  //    <vscale x 4 x float> %acc,
-  //    <vscale x 4 x float> %lhs,
-  //    <vscale x 4 x float> %rhs,
-  //    <vscale x 4 x i1>    %predicate
-  // )
+  // <vscale x 4 x float> @llvm.aarch64.sve.fmla(predicate, acc, a, b)
+  // computes acc = acc + a * b, merging lanes where predicate is false.
   Value fmlaResult =
       LLVM::CallIntrinsicOp::create(
-          b, loc, vecF32Ty,
-          b.getStringAttr("llvm.aarch64.sve.fmla.nxv4f32"),
-          ValueRange{acc, lhs, rhs, predicate})
+          builder, loc, accType,
+          builder.getStringAttr("llvm.aarch64.sve.fmla"),
+          ValueRange{undefPred, acc, a, b})
           .getResult(0);
 
   return fmlaResult;
@@ -852,7 +847,7 @@ static Value createCpuMmaIntrinsicCall(OpBuilder &builder, Location loc,
   // carries the N lanes, and the M↔N-swapped orientation (N×1×1) mirrors that
   // onto the RHS. Broadcast the scalar operand up to the vector operand's type
   // — preserving a scalable `[4]` for SVE — and emit `llvm.fma.v4f32` (NEON)
-  // or `llvm.fma.nxv4f32` (SVE).
+  // or `llvm.aarch64.sve.fmla` (SVE).
   //
   // This runs before the x86 widen + broadcast machinery below, whose
   // fixed-width `getNumElements` bookkeeping is undefined for scalable vectors
@@ -873,10 +868,9 @@ static Value createCpuMmaIntrinsicCall(OpBuilder &builder, Location loc,
     Value a = swapped ? vectorOperand : broadcastScalar;
     Value b = swapped ? broadcastScalar : vectorOperand;
 
-    if vectorType.isScalable() {
-      // "llvm.fma.nxv4f32"
-      return lowerAArch64SveFmlaNxv4f32(b, loc, lhs, rhs, acc, predicateMask);
-    else {
+    if (vectorType.isScalable()) {
+      return lowerAArch64SveFmlaNxv4f32(builder, loc, a, b, acc);
+    } else {
       StringRef intrinsicName = "llvm.fma.v4f32";
       return LLVM::CallIntrinsicOp::create(builder, loc, acc.getType(),
                                            builder.getStringAttr(intrinsicName),
