@@ -804,7 +804,7 @@ static Value lowerX86Avx512Vnni16x16x2I8(OpBuilder &b, Location loc, Value lhs,
 //
 // Computation: acc = a * b + acc
 // Emits SVE assembly: fmla Zd.S, Pg/M, Zn.S, Zm.S
-static Value lowerAArch64SveFmlaNxv4f32(OpBuilder &builder, Location loc,
+static Value lowerAArch64SveFmlaf32(OpBuilder &builder, Location loc,
                                           Value a, Value b, Value acc) {
   auto accType = cast<VectorType>(acc.getType());
 
@@ -869,7 +869,7 @@ static Value createCpuMmaIntrinsicCall(OpBuilder &builder, Location loc,
     Value b = swapped ? broadcastScalar : vectorOperand;
 
     if (vectorType.isScalable()) {
-      return lowerAArch64SveFmlaNxv4f32(builder, loc, a, b, acc);
+      return lowerAArch64SveFmlaf32(builder, loc, a, b, acc);
     } else {
       StringRef intrinsicName = "llvm.fma.v4f32";
       return LLVM::CallIntrinsicOp::create(builder, loc, acc.getType(),
