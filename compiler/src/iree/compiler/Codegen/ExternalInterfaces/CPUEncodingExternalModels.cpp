@@ -427,12 +427,27 @@ static bool isMmaIntrinsicArrayValid(MLIRContext *ctx,
   // (3) and (4) need types *with* signedness so e.g. vpdpbusd's natural
   // `ui8` LHS visibly swaps with its sibling's `ui8` RHS. Read directly
   // from `getABCElementTypes`; `getUndistributedTileTypes` would strip it.
+  // Use swizzle-based getTileMxNxK to support both row-major and scalable
+  // (SVE) intrinsics. For scalable dims, the swizzle uses the minimum
+  // multiplier (e.g., 1 for ArmSveVLIn128bitUnits = 128-bit minimum).
   auto getShapeAndTypes = [&](MMAIntrinsic intr) {
-    auto mnk = IREE::CPU::getRowMajorTilesMNKShape(intr);
-    assert(mnk && "validator only handles row-major-tile intrinsics");
-    auto [m, n, k] = *mnk;
+    // Try row-major path first (most intrinsics).
+    if (auto mnk = IREE::CPU::getRowMajorTilesMNKShape(intr)) {
+      auto [m, n, k] = *mnk;
+      auto [lhs, rhs, acc] = IREE::CPU::getABCElementTypes(ctx, intr);
+      return std::make_tuple(m, n, k, lhs, rhs, acc);
+    }
+    // Fall back to swizzle-based approach for scalable intrinsics (SVE).
+    // Construct a DataTiledMMAAttr with unroll factors of 1 to get the
+    // intrinsic's base swizzle, then derive M/N/K from it.
+    auto attr = DataTiledMMAAttr::get(ctx, intr, /*intrinsicsM=*/1,
+                                      /*intrinsicsN=*/1, /*intrinsicsK=*/1,
+                                      /*lhsType=*/Type(), /*rhsType=*/Type(),
+                                      /*accType=*/Type());
+    auto tileMxNxK = getTileMxNxK(attr);
     auto [lhs, rhs, acc] = IREE::CPU::getABCElementTypes(ctx, intr);
-    return std::make_tuple(m, n, k, lhs, rhs, acc);
+    return std::make_tuple(tileMxNxK.M, tileMxNxK.N, tileMxNxK.K, lhs, rhs,
+                           acc);
   };
 
   for (size_t i = 0; i < arr.size(); ++i) {
@@ -527,6 +542,16 @@ getMmaIntrinsicsForTargetConfig(DictionaryAttr config) {
       }
     }
   }
+  // AArch64 SVE/SVE2 intrinsics: require scalable vectorization enabled and
+  // either +sve or +sve2 feature. The SVE FMLA intrinsics use scalable vector
+  // types (vector<[4]xf32>) that map to AArch64's scalable vector registers.
+  if (isAArch64(config) && isScalableVectorizationEnabled()) {
+    if (hasFeature(config, "+sve") || hasFeature(config, "+sve2")) {
+      out.push_back(MMAIntrinsic::MMA_ARM_SVE_FMLA_1x4VLx1_F32_F32);
+      out.push_back(MMAIntrinsic::MMA_ARM_SVE_FMLA_4VLx1x1_F32_F32);
+    }
+    // Note: NEON intrinsics will be added in a follow-up PR.
+  }
   out.push_back(pickGenericScalarMMAForTarget(config));
   assert(isMmaIntrinsicArrayValid(config.getContext(), out) &&
          "getMmaIntrinsicsForTargetConfig must return a list satisfying the "
@@ -573,11 +598,24 @@ getIntrinsicInfo(MLIRContext *ctx, ArrayRef<Type> elementTypes,
       accTy != elementTypes[2]) {
     return std::nullopt;
   }
-  auto mnk = IREE::CPU::getRowMajorTilesMNKShape(intr);
-  if (!mnk) {
-    return std::nullopt;
+  // Try row-major path first (most intrinsics).
+  int64_t m = 0, n = 0, k = 0;
+  if (auto mnk = IREE::CPU::getRowMajorTilesMNKShape(intr)) {
+    std::tie(m, n, k) = *mnk;
+  } else {
+    // Fall back to swizzle-based approach for scalable intrinsics (SVE).
+    // Construct a DataTiledMMAAttr with unroll factors of 1 to get the
+    // intrinsic's base swizzle, then derive M/N/K from it. For scalable
+    // dims, the swizzle uses the minimum multiplier (e.g., 1 for
+    // ArmSveVLIn128bitUnits = 128-bit minimum).
+    auto attr = IREE::CPU::DataTiledMMAAttr::get(
+        ctx, intr, /*intrinsicsM=*/1, /*intrinsicsN=*/1, /*intrinsicsK=*/1,
+        /*lhsType=*/Type(), /*rhsType=*/Type(), /*accType=*/Type());
+    auto tileMxNxK = getTileMxNxK(attr);
+    m = tileMxNxK.M;
+    n = tileMxNxK.N;
+    k = tileMxNxK.K;
   }
-  auto [m, n, k] = *mnk;
   IntrinsicInfo info;
   info.intrinsicM = m;
   info.intrinsicN = n;
